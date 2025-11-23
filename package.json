@@ -1,8 +1,9 @@
 {
-  "name": "rio-scraper",
+  "name": "rio-scrapper",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "postinstall": "npx puppeteer browsers install chrome",
     "start": "node index.js"
   },
   "dependencies": {
