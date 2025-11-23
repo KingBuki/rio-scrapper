@@ -4,23 +4,23 @@ const puppeteer = require('puppeteer');
 
 const PORT = process.env.PORT || 3000;
 
-// 🧊 Pfad zu Chrome, wie in den Render-Logs installiert
-// Wenn du den Pfad später änderst, einfach hier anpassen.
+// 🔧 Chrome-Pfad NICHT mehr hardcoden – Puppeteer weiß selbst, wo es installiert hat
 function getChromeExecutablePath() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  try {
+    const p = puppeteer.executablePath();
+    console.log('[scraper] puppeteer.executablePath() =', p);
+    return p;
+  } catch (e) {
+    console.warn('[scraper] executablePath() nicht verfügbar, versuche Default.');
+    return undefined;
   }
-
-  // Aus deinem Log:
-  // chrome@127.0.6533.88 /opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome
-  return '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome';
 }
 
 // 🔍 eigentliche Scrape-Funktion
 async function scrapeCharacterStats({ region, realm, name, season }) {
   const browser = await puppeteer.launch({
     headless: 'new',
-    executablePath: getChromeExecutablePath(),
+    executablePath: getChromeExecutablePath(), // ✅ Pfad von Puppeteer selbst
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -44,8 +44,7 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
       timeout: 60000
     });
 
-    // 🧠 Hier scrapen wir die Zahlen aus dem DOM.
-    // Ohne DOM-Infos müssen wir "text-basiert" suchen.
+    // 🧠 Scraping-Logik – aktuell noch generisch, später feintunen
     const stats = await page.evaluate(() => {
       function findStat(labelVariants) {
         const labelsLower = labelVariants.map((t) => t.toLowerCase());
@@ -61,7 +60,6 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
           if (!text) continue;
 
           if (labelsLower.some((lbl) => text.includes(lbl))) {
-            // Versuch: in diesem Element oder naher Umgebung eine Zahl finden
             let el = node;
             for (let i = 0; i < 3 && el; i++) {
               const nums = Array.from(
@@ -84,7 +82,6 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
         return null;
       }
 
-      // Labels in Englisch + ein paar deutsche Fallbacks
       return {
         totalRuns: findStat(['total runs', 'gesamtläufe', 'gesamtanzahl']),
         runs10plus: findStat(['10+ runs', '10+ keys', '10+ läufe']),
