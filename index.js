@@ -2,155 +2,130 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 
+const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 🔧 Chrome-Pfad NICHT mehr hardcoden – Puppeteer weiß selbst, wo es installiert hat
-function getChromeExecutablePath() {
-  try {
-    const p = puppeteer.executablePath();
-    console.log('[scraper] puppeteer.executablePath() =', p);
-    return p;
-  } catch (e) {
-    console.warn('[scraper] executablePath() nicht verfügbar, versuche Default.');
-    return undefined;
-  }
-}
+// einfache Health-Route
+app.get('/', (req, res) => {
+  res.json({ ok: true, message: 'rio-scrapper online' });
+});
 
-// 🔍 eigentliche Scrape-Funktion
+/**
+ * Holt von raider.io die Saison-Übersicht (All Runs, 10+, 5+, 2+)
+ * per Headless-Browser.
+ */
 async function scrapeCharacterStats({ region, realm, name, season }) {
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    executablePath: getChromeExecutablePath(), // ✅ Pfad von Puppeteer selbst
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
-    ]
-  });
+  const url =
+    `https://raider.io/characters/` +
+    `${encodeURIComponent(region)}/` +
+    `${encodeURIComponent(realm)}/` +
+    `${encodeURIComponent(name)}?` +
+    `season=${encodeURIComponent(season)}`;
 
+  let browser;
   try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-zygote',
+        '--single-process'
+      ]
+      // ❌ KEIN executablePath hier – Puppeteer nutzt seinen eigenen Chromium
+    });
+
     const page = await browser.newPage();
-
-    const url = `https://raider.io/characters/${encodeURIComponent(
-      region
-    )}/${encodeURIComponent(realm)}/${encodeURIComponent(
-      name
-    )}?season=${encodeURIComponent(season)}`;
-
-    console.log('[scraper] Aufruf URL:', url);
-
     await page.goto(url, {
-      waitUntil: 'networkidle0',
+      waitUntil: 'networkidle2',
       timeout: 60000
     });
 
-    // 🧠 Scraping-Logik – aktuell noch generisch, später feintunen
+    // Jetzt im gerenderten DOM nach den Zahlen suchen
     const stats = await page.evaluate(() => {
-      function findStat(labelVariants) {
-        const labelsLower = labelVariants.map((t) => t.toLowerCase());
-        const walker = document.createTreeWalker(
-          document.body,
-          NodeFilter.SHOW_ELEMENT,
-          null
+      // Wir suchen nach Labels wie "All Runs", "10+ Runs", "5+ Runs", "2+ Runs"
+      const root = document.body;
+
+      const findValueByLabel = (labelText) => {
+        const candidates = Array.from(
+          root.querySelectorAll('span, div, p, strong')
         );
 
-        let node;
-        while ((node = walker.nextNode())) {
-          const text = (node.textContent || '').trim().toLowerCase();
-          if (!text) continue;
+        // Label-Knoten mit genau diesem Text
+        const labelNode = candidates.find(
+          (el) => el.textContent.trim() === labelText
+        );
+        if (!labelNode) return null;
 
-          if (labelsLower.some((lbl) => text.includes(lbl))) {
-            let el = node;
-            for (let i = 0; i < 3 && el; i++) {
-              const nums = Array.from(
-                el.querySelectorAll('span, div, strong, b')
-              )
-                .map((e) =>
-                  (e.textContent || '')
-                    .replace(/\s+/g, '')
-                    .replace(/[^0-9]/g, '')
-                )
-                .filter((str) => str.length > 0);
-              if (nums.length > 0) {
-                const val = parseInt(nums[0], 10);
-                if (!Number.isNaN(val)) return val;
-              }
-              el = el.parentElement;
-            }
-          }
-        }
-        return null;
-      }
+        // Oft steht der Wert im gleichen Container z.B. als <strong>
+        const parent = labelNode.closest('div, span, p') || labelNode.parentElement;
+        if (!parent) return null;
 
-      return {
-        totalRuns: findStat(['total runs', 'gesamtläufe', 'gesamtanzahl']),
-        runs10plus: findStat(['10+ runs', '10+ keys', '10+ läufe']),
-        runs5plus: findStat(['5+ runs', '5+ keys', '5+ läufe']),
-        runs2plus: findStat(['2+ runs', '2+ keys', '2+ läufe'])
+        // Suche im gleichen Container nach einem "Zahl"-Element
+        const valueNode =
+          parent.querySelector('strong') ||
+          parent.querySelector('span') ||
+          parent.querySelector('div');
+
+        if (!valueNode) return null;
+
+        const text = valueNode.textContent.replace(/,/g, '').trim();
+        const num = parseInt(text, 10);
+        if (Number.isNaN(num)) return null;
+        return num;
       };
+
+      const totalRuns  = findValueByLabel('All Runs')  ?? 0;
+      const runs10plus = findValueByLabel('10+ Runs') ?? 0;
+      const runs5plus  = findValueByLabel('5+ Runs')  ?? 0;
+      const runs2plus  = findValueByLabel('2+ Runs')  ?? 0;
+
+      return { totalRuns, runs10plus, runs5plus, runs2plus };
     });
 
-    return stats;
+    return {
+      ok: true,
+      url,
+      ...stats
+    };
   } finally {
-    await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
-// 🚀 Express-App
-const app = express();
-
-// Healthcheck / Info
-app.get('/', (req, res) => {
-  res.json({
-    ok: true,
-    message: 'rio-scrapper is running',
-    usage:
-      '/character?region=eu&realm=blackmoore&name=Bukitos&season=season-tww-3'
-  });
-});
-
-// Haupt-Endpoint:
-// GET /character?region=eu&realm=blackmoore&name=Bukitos&season=season-tww-3
+// API-Route: /character?region=eu&realm=blackmoore&name=Bukitos&season=season-tww-3
 app.get('/character', async (req, res) => {
+  const {
+    region = 'eu',
+    realm,
+    name,
+    season = 'season-tww-3'
+  } = req.query;
+
+  if (!realm || !name) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Parameter "realm" und "name" sind erforderlich.'
+    });
+  }
+
   try {
-    const {
-      region = 'eu',
-      realm,
-      name,
-      season = 'season-tww-3'
-    } = req.query;
-
-    if (!realm || !name) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Missing query params: realm and name are required.'
-      });
-    }
-
-    const stats = await scrapeCharacterStats({
-      region,
-      realm,
-      name,
-      season
-    });
-
-    if (!stats) {
-      return res
-        .status(500)
-        .json({ ok: false, error: 'Scraping returned no data.' });
-    }
-
-    res.json({
-      ok: true,
-      region,
-      realm,
-      name,
-      season,
-      ...stats
-    });
+    const data = await scrapeCharacterStats({ region, realm, name, season });
+    return res.json(data);
   } catch (err) {
     console.error('[scraper] Fehler beim /character-Request:', err);
-    res.status(500).json({ ok: false, error: String(err) });
+    return res.status(500).json({
+      ok: false,
+      error: err.message || String(err)
+    });
   }
 });
 
