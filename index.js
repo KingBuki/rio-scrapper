@@ -5,11 +5,6 @@ const puppeteer = require('puppeteer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 👉 Hier legen wir fest, wo Chrome liegt (Render + Puppeteer-Cache)
-const CHROME_EXECUTABLE_PATH =
-  process.env.PUPPETEER_EXECUTABLE_PATH || // falls du es in Render als Env-Var setzt
-  '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome';
-
 // einfache Health-Route
 app.get('/', (req, res) => {
   res.json({ ok: true, message: 'rio-scrapper online' });
@@ -27,14 +22,12 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
     `${encodeURIComponent(name)}?` +
     `season=${encodeURIComponent(season)}`;
 
+  console.log('[scraper] Rufe URL auf:', url);
+
   let browser;
   try {
-    console.log('[scraper] Rufe URL auf:', url);
-    console.log('[scraper] Nutze Chrome-Pfad:', CHROME_EXECUTABLE_PATH);
-
     browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: CHROME_EXECUTABLE_PATH,  // 👈 WICHTIG FÜR RENDER
+      headless: 'new', // oder true
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -43,6 +36,7 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
         '--no-zygote',
         '--single-process'
       ]
+      // ❌ KEIN executablePath hier – Puppeteer nutzt seinen eigenen Chromium
     });
 
     const page = await browser.newPage();
@@ -53,7 +47,6 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
 
     // Jetzt im gerenderten DOM nach den Zahlen suchen
     const stats = await page.evaluate(() => {
-      // Wir suchen nach Labels wie "All Runs", "10+ Runs", "5+ Runs", "2+ Runs"
       const root = document.body;
 
       const findValueByLabel = (labelText) => {
@@ -61,18 +54,14 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
           root.querySelectorAll('span, div, p, strong')
         );
 
-        // Label-Knoten mit genau diesem Text
         const labelNode = candidates.find(
           (el) => el.textContent.trim() === labelText
         );
         if (!labelNode) return null;
 
-        // Oft steht der Wert im gleichen Container z.B. als <strong>
-        const parent =
-          labelNode.closest('div, span, p') || labelNode.parentElement;
+        const parent = labelNode.closest('div, span, p') || labelNode.parentElement;
         if (!parent) return null;
 
-        // Suche im gleichen Container nach einem "Zahl"-Element
         const valueNode =
           parent.querySelector('strong') ||
           parent.querySelector('span') ||
@@ -104,7 +93,7 @@ async function scrapeCharacterStats({ region, realm, name, season }) {
       try {
         await browser.close();
       } catch {
-        // ignore
+        // ignorieren
       }
     }
   }
